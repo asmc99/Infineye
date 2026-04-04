@@ -37,32 +37,29 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 20px;
-            height: 20px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.8);
             pointer-events: none;
             z-index: 10;
             display: none;
+            transition: width 0.15s ease, height 0.15s ease,
+                        background 0.15s ease, border 0.15s ease;
+            border: 2px solid transparent;
+            box-sizing: content-box;
         }
 
-        #crosshair::before,
-        #crosshair::after {
-            content: '';
-            position: absolute;
-            background: rgba(255, 255, 255, 0.7);
+        #crosshair.hover {
+            width: 12px;
+            height: 12px;
         }
 
-        #crosshair::before {
-            width: 2px;
-            height: 20px;
-            left: 9px;
-            top: 0;
-        }
-
-        #crosshair::after {
-            width: 20px;
-            height: 2px;
-            left: 0;
-            top: 9px;
+        #crosshair.holding {
+            width: 14px;
+            height: 14px;
+            background: transparent;
+            border-color: rgba(255, 255, 255, 0.8);
         }
 
         #instructions {
@@ -101,7 +98,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
     // ============================================================
-    //  PERCEPTA — Motor base
+    //  PERCEPTA — Motor base + Perspectiva Forzada
     // ============================================================
 
     // ------------------------------------------------------------
@@ -149,12 +146,6 @@
     const instructions = document.getElementById('instructions');
     const crosshair = document.getElementById('crosshair');
 
-    document.addEventListener('click', () => {
-        if (!isLocked) {
-            document.body.requestPointerLock();
-        }
-    });
-
     document.addEventListener('pointerlockchange', () => {
         isLocked = document.pointerLockElement === document.body;
         instructions.style.display = isLocked ? 'none' : 'block';
@@ -187,7 +178,6 @@
     const floorMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 });
     const wallMat  = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 });
 
-    // Piso
     const floor = new THREE.Mesh(
         new THREE.PlaneGeometry(ROOM_W, ROOM_D),
         floorMat
@@ -196,7 +186,6 @@
     floor.receiveShadow = true;
     scene.add(floor);
 
-    // Techo
     const ceiling = new THREE.Mesh(
         new THREE.PlaneGeometry(ROOM_W, ROOM_D),
         wallMat
@@ -206,7 +195,6 @@
     ceiling.receiveShadow = true;
     scene.add(ceiling);
 
-    // Pared trasera (z negativo)
     const wallBack = new THREE.Mesh(
         new THREE.PlaneGeometry(ROOM_W, ROOM_H),
         wallMat
@@ -215,7 +203,6 @@
     wallBack.receiveShadow = true;
     scene.add(wallBack);
 
-    // Pared frontal (z positivo)
     const wallFront = new THREE.Mesh(
         new THREE.PlaneGeometry(ROOM_W, ROOM_H),
         wallMat
@@ -225,7 +212,6 @@
     wallFront.receiveShadow = true;
     scene.add(wallFront);
 
-    // Pared izquierda (x negativo)
     const wallLeft = new THREE.Mesh(
         new THREE.PlaneGeometry(ROOM_D, ROOM_H),
         wallMat
@@ -235,7 +221,6 @@
     wallLeft.receiveShadow = true;
     scene.add(wallLeft);
 
-    // Pared derecha (x positivo)
     const wallRight = new THREE.Mesh(
         new THREE.PlaneGeometry(ROOM_D, ROOM_H),
         wallMat
@@ -245,18 +230,18 @@
     wallRight.receiveShadow = true;
     scene.add(wallRight);
 
-    // Colección de paredes para colisiones
     const walls = [wallBack, wallFront, wallLeft, wallRight];
+
+    // Superficies del nivel para drop raycasts (piso, techo, paredes)
+    const levelSurfaces = [floor, ceiling, ...walls];
 
     // ------------------------------------------------------------
     //  4. ILUMINACIÓN
     // ------------------------------------------------------------
 
-    // Luz ambiental
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambientLight);
 
-    // Luz direccional principal con sombras
     const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
     dirLight.position.set(5, 8, 3);
     dirLight.castShadow = true;
@@ -270,7 +255,6 @@
     dirLight.shadow.camera.bottom = -15;
     scene.add(dirLight);
 
-    // Point lights para profundidad
     const pointLight1 = new THREE.PointLight(0xffeedd, 0.3, 20);
     pointLight1.position.set(-6, 6, -6);
     scene.add(pointLight1);
@@ -284,19 +268,21 @@
     // ------------------------------------------------------------
 
     const COLLISION_DISTANCE = 0.5;
-    const raycaster = new THREE.Raycaster();
+    const collisionRaycaster = new THREE.Raycaster();
     const collisionMeshes = [...walls, floor];
 
     function canMove(direction) {
-        raycaster.set(camera.position, direction);
-        raycaster.far = COLLISION_DISTANCE;
-        const hits = raycaster.intersectObjects(collisionMeshes);
+        collisionRaycaster.set(camera.position, direction);
+        collisionRaycaster.far = COLLISION_DISTANCE;
+        const hits = collisionRaycaster.intersectObjects(collisionMeshes);
         return hits.length === 0;
     }
 
     // ------------------------------------------------------------
-    //  6. OBJETOS DE PRUEBA (3 cubos)
+    //  6. OBJETOS DE PRUEBA (Pickables)
     // ------------------------------------------------------------
+
+    const pickableObjects = [];
 
     function createCube(size, color, x, y, z) {
         const mesh = new THREE.Mesh(
@@ -308,6 +294,13 @@
         mesh.receiveShadow = true;
         scene.add(mesh);
         collisionMeshes.push(mesh);
+
+        // Metadata para perspectiva forzada
+        mesh.userData.isPickable = true;
+        mesh.userData.originalScale = new THREE.Vector3(1, 1, 1);  // escala base = 1
+        mesh.userData.baseGeometrySize = size;  // tamaño geométrico original
+
+        pickableObjects.push(mesh);
         return mesh;
     }
 
@@ -316,7 +309,261 @@
     const cubeGreen = createCube(2.0, 0x2ecc71,  5, 1.00,  7);
 
     // ------------------------------------------------------------
-    //  7. GAME LOOP
+    //  7. SISTEMA DE PERSPECTIVA FORZADA
+    // ------------------------------------------------------------
+
+    const PICK_RANGE = 5;           // Distancia máxima para tomar un objeto
+    const HOLD_DIST_DEFAULT = 3;    // Distancia de hold por defecto
+    const HOLD_DIST_MIN = 2;        // Mínimo (scroll acercar)
+    const HOLD_DIST_MAX = 6;        // Máximo (scroll alejar)
+    const SCALE_MIN = 0.1;          // Escala mínima relativa al original
+    const SCALE_MAX = 20;           // Escala máxima relativa al original
+    const DROP_MAX_DISTANCE = 50;   // Distancia máxima de drop raycast
+    const BOB_SPEED = 2.5;          // Velocidad del bobbing
+    const BOB_AMOUNT = 0.02;        // Amplitud del bobbing
+    const HIGHLIGHT_EMISSIVE = 0.15;// Intensidad emissive al hover
+
+    const interactionRay = new THREE.Raycaster();
+
+    let heldObject = null;          // Objeto actualmente sostenido
+    let holdDistance = HOLD_DIST_DEFAULT;
+    let visualSize = 0;             // Ratio tamaño_aparente = worldScale / distancia
+    let holdTime = 0;               // Timer para bobbing
+    let hoveredObject = null;       // Objeto bajo el crosshair
+    let prevHoveredObject = null;
+
+    // --- Detección de hover (cada frame) ---
+    function updateInteractionRaycast() {
+        if (heldObject) {
+            // Mientras sostenemos, no hay hover
+            if (hoveredObject) clearHover();
+            hoveredObject = null;
+            return;
+        }
+
+        const dir = new THREE.Vector3();
+        camera.getWorldDirection(dir);
+        interactionRay.set(camera.position, dir);
+        interactionRay.far = PICK_RANGE;
+
+        const hits = interactionRay.intersectObjects(pickableObjects);
+
+        if (hits.length > 0) {
+            hoveredObject = hits[0].object;
+        } else {
+            hoveredObject = null;
+        }
+
+        // Actualizar highlight visual
+        if (hoveredObject !== prevHoveredObject) {
+            if (prevHoveredObject) clearHover();
+            if (hoveredObject) applyHover(hoveredObject);
+            prevHoveredObject = hoveredObject;
+        }
+
+        // Actualizar crosshair
+        crosshair.classList.toggle('hover', hoveredObject !== null);
+    }
+
+    function applyHover(obj) {
+        obj.material.emissive = obj.material.emissive || new THREE.Color(0x000000);
+        obj.userData.savedEmissive = obj.material.emissive.getHex();
+        obj.material.emissiveIntensity = HIGHLIGHT_EMISSIVE;
+        obj.material.emissive.set(0xffffff);
+    }
+
+    function clearHover() {
+        if (!prevHoveredObject) return;
+        prevHoveredObject.material.emissiveIntensity = 0;
+        prevHoveredObject.material.emissive.setHex(
+            prevHoveredObject.userData.savedEmissive || 0x000000
+        );
+    }
+
+    // --- Tomar objeto ---
+    function pickUpObject(obj) {
+        // Calcular la escala del mundo actual del objeto
+        const worldScale = obj.scale.x; // Asumimos escala uniforme
+
+        // Distancia desde la cámara al objeto
+        const dist = camera.position.distanceTo(obj.position);
+
+        // Tamaño visual aparente = escala_mundo / distancia
+        visualSize = worldScale / dist;
+
+        // Remover del array de colisión mientras se sostiene
+        const colIdx = collisionMeshes.indexOf(obj);
+        if (colIdx !== -1) collisionMeshes.splice(colIdx, 1);
+
+        // Quitar de la escena y pegar como hijo de la cámara
+        scene.remove(obj);
+        camera.add(obj);
+
+        // Calcular escala para que se vea del mismo tamaño a holdDistance
+        holdDistance = HOLD_DIST_DEFAULT;
+        const holdScale = visualSize * holdDistance;
+        obj.scale.set(holdScale, holdScale, holdScale);
+
+        // Posicionar frente a la cámara en espacio local
+        obj.position.set(0, 0, -holdDistance);
+        obj.rotation.set(0, 0, 0);
+
+        heldObject = obj;
+        holdTime = 0;
+
+        // Limpiar hover
+        clearHover();
+        hoveredObject = null;
+        prevHoveredObject = null;
+
+        // Crosshair modo "holding"
+        crosshair.classList.remove('hover');
+        crosshair.classList.add('holding');
+    }
+
+    // --- Soltar objeto ---
+    function dropObject() {
+        if (!heldObject) return;
+
+        const obj = heldObject;
+        heldObject = null;
+
+        // Raycast desde la cámara hacia adelante para encontrar superficie
+        const dir = new THREE.Vector3();
+        camera.getWorldDirection(dir);
+        interactionRay.set(camera.position, dir);
+        interactionRay.far = DROP_MAX_DISTANCE;
+
+        // Intersectar con superficies del nivel + otros objetos pickables en escena
+        const dropTargets = [...levelSurfaces];
+        for (const p of pickableObjects) {
+            if (p !== obj && p.parent === scene) dropTargets.push(p);
+        }
+
+        const hits = interactionRay.intersectObjects(dropTargets);
+
+        let dropDist;
+        let hitPoint;
+        let hitNormal;
+
+        if (hits.length > 0) {
+            dropDist = hits[0].distance;
+            hitPoint = hits[0].point.clone();
+            hitNormal = hits[0].face.normal.clone();
+            // Transformar la normal al espacio del mundo
+            hitNormal.transformDirection(hits[0].object.matrixWorld);
+        } else {
+            // Sin intersección: soltar a distancia máxima de hold
+            dropDist = holdDistance;
+            hitPoint = camera.position.clone().add(dir.multiplyScalar(dropDist));
+            hitNormal = new THREE.Vector3(0, 1, 0);
+        }
+
+        // Calcular nueva escala: misma proporción visual
+        let newScale = visualSize * dropDist;
+
+        // Obtener el tamaño geométrico base para calcular límites
+        const baseSize = obj.userData.baseGeometrySize;
+
+        // Aplicar límites de escala relativos al tamaño original
+        newScale = Math.max(newScale, SCALE_MIN);
+        newScale = Math.min(newScale, SCALE_MAX);
+
+        // Quitar de la cámara y devolver a la escena
+        camera.remove(obj);
+        scene.add(obj);
+
+        obj.scale.set(newScale, newScale, newScale);
+
+        // La mitad del tamaño real del objeto (para apoyarlo en superficie)
+        const halfHeight = (baseSize * newScale) / 2;
+
+        // Posicionar el objeto
+        obj.position.copy(hitPoint);
+
+        // Ajustar posición para apoyar en la superficie según la normal
+        // Si la normal apunta hacia arriba (piso), elevar por halfHeight
+        if (hitNormal.y > 0.5) {
+            obj.position.y = hitPoint.y + halfHeight;
+        }
+        // Si la normal apunta hacia abajo (techo), colgar
+        else if (hitNormal.y < -0.5) {
+            obj.position.y = hitPoint.y - halfHeight;
+        }
+        // Paredes: desplazar en la dirección de la normal
+        else {
+            obj.position.add(hitNormal.clone().multiplyScalar(halfHeight));
+            // Apoyar en el piso
+            obj.position.y = halfHeight;
+        }
+
+        // Resetear rotación
+        obj.rotation.set(0, 0, 0);
+
+        // Devolver al array de colisión
+        collisionMeshes.push(obj);
+
+        // Crosshair modo normal
+        crosshair.classList.remove('holding');
+
+        visualSize = 0;
+    }
+
+    // --- Scroll para cambiar distancia de hold ---
+    document.addEventListener('wheel', (e) => {
+        if (!isLocked || !heldObject) return;
+
+        const scrollDelta = -Math.sign(e.deltaY) * 0.3;
+        const newDist = THREE.MathUtils.clamp(
+            holdDistance + scrollDelta,
+            HOLD_DIST_MIN,
+            HOLD_DIST_MAX
+        );
+
+        holdDistance = newDist;
+
+        // Reescalar para mantener el mismo tamaño visual
+        const holdScale = visualSize * holdDistance;
+        heldObject.scale.set(holdScale, holdScale, holdScale);
+        heldObject.position.z = -holdDistance;
+    });
+
+    // --- Actualizar objeto sostenido (bobbing) ---
+    function updateHeldObject(dt) {
+        if (!heldObject) return;
+
+        holdTime += dt;
+
+        // Bobbing sutil
+        const bob = Math.sin(holdTime * BOB_SPEED) * BOB_AMOUNT;
+        heldObject.position.set(0, bob, -holdDistance);
+    }
+
+    // --- Input: Click para tomar/soltar ---
+    document.addEventListener('mousedown', (e) => {
+        if (!isLocked) {
+            document.body.requestPointerLock();
+            return;
+        }
+
+        if (e.button === 0) { // Click izquierdo
+            if (heldObject) {
+                dropObject();
+            } else if (hoveredObject) {
+                pickUpObject(hoveredObject);
+            }
+        } else if (e.button === 2) { // Click derecho
+            if (heldObject) {
+                dropObject();
+            }
+        }
+    });
+
+    // Prevenir menú contextual
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    // ------------------------------------------------------------
+    //  8. GAME LOOP
     // ------------------------------------------------------------
 
     let prevTime = performance.now();
@@ -324,7 +571,7 @@
     function update(dt) {
         if (!isLocked) return;
 
-        // Vectores de dirección basados en la orientación de la cámara
+        // --- Movimiento del jugador ---
         const forward = new THREE.Vector3();
         camera.getWorldDirection(forward);
         forward.y = 0;
@@ -340,25 +587,26 @@
         if (keys['KeyA'] || keys['ArrowLeft'])   moveDir.sub(right);
         if (keys['KeyD'] || keys['ArrowRight'])  moveDir.add(right);
 
-        if (moveDir.lengthSq() === 0) return;
-        moveDir.normalize();
+        if (moveDir.lengthSq() > 0) {
+            moveDir.normalize();
+            const velocity = moveDir.multiplyScalar(MOVE_SPEED * dt);
 
-        const velocity = moveDir.multiplyScalar(MOVE_SPEED * dt);
+            const dirX = new THREE.Vector3(Math.sign(velocity.x), 0, 0);
+            if (velocity.x !== 0 && canMove(dirX)) {
+                camera.position.x += velocity.x;
+            }
 
-        // Comprobar colisión en X
-        const dirX = new THREE.Vector3(Math.sign(velocity.x), 0, 0);
-        if (velocity.x !== 0 && canMove(dirX)) {
-            camera.position.x += velocity.x;
+            const dirZ = new THREE.Vector3(0, 0, Math.sign(velocity.z));
+            if (velocity.z !== 0 && canMove(dirZ)) {
+                camera.position.z += velocity.z;
+            }
         }
 
-        // Comprobar colisión en Z
-        const dirZ = new THREE.Vector3(0, 0, Math.sign(velocity.z));
-        if (velocity.z !== 0 && canMove(dirZ)) {
-            camera.position.z += velocity.z;
-        }
-
-        // Mantener altura fija
         camera.position.y = PLAYER_HEIGHT;
+
+        // --- Sistemas de interacción ---
+        updateInteractionRaycast();
+        updateHeldObject(dt);
     }
 
     function gameLoop() {
