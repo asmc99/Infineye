@@ -31,16 +31,349 @@
             width: 100vw;
             height: 100vh;
         }
+
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+            z-index: 10;
+            display: none;
+        }
+
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        #crosshair::before {
+            width: 2px;
+            height: 20px;
+            left: 9px;
+            top: 0;
+        }
+
+        #crosshair::after {
+            width: 20px;
+            height: 2px;
+            left: 0;
+            top: 9px;
+        }
+
+        #instructions {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            text-align: center;
+            z-index: 20;
+            user-select: none;
+        }
+
+        #instructions h1 {
+            font-size: 48px;
+            letter-spacing: 12px;
+            margin-bottom: 20px;
+            font-weight: 300;
+        }
+
+        #instructions p {
+            font-size: 16px;
+            opacity: 0.6;
+        }
     </style>
 </head>
 <body>
-    <div id="game-container">
-        <canvas id="game-canvas"></canvas>
+    <div id="game-container"></div>
+    <div id="crosshair"></div>
+    <div id="instructions">
+        <h1>PERCEPTA</h1>
+        <p>Haz click para jugar</p>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
-        // Game code goes here
+    // ============================================================
+    //  PERCEPTA — Motor base
+    // ============================================================
+
+    // ------------------------------------------------------------
+    //  1. RENDERER, SCENE & CAMERA
+    // ------------------------------------------------------------
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf0f0f0);
+
+    const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+    );
+    camera.position.set(0, 1.7, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.getElementById('game-container').appendChild(renderer.domElement);
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ------------------------------------------------------------
+    //  2. CONTROLES FIRST PERSON (Pointer Lock + WASD)
+    // ------------------------------------------------------------
+
+    const MOUSE_SENSITIVITY = 0.002;
+    const MOVE_SPEED = 5;
+    const PLAYER_HEIGHT = 1.7;
+
+    let yaw = 0;
+    let pitch = 0;
+    let isLocked = false;
+
+    const keys = {};
+
+    const instructions = document.getElementById('instructions');
+    const crosshair = document.getElementById('crosshair');
+
+    document.addEventListener('click', () => {
+        if (!isLocked) {
+            document.body.requestPointerLock();
+        }
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+        isLocked = document.pointerLockElement === document.body;
+        instructions.style.display = isLocked ? 'none' : 'block';
+        crosshair.style.display = isLocked ? 'block' : 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isLocked) return;
+
+        yaw -= e.movementX * MOUSE_SENSITIVITY;
+        pitch -= e.movementY * MOUSE_SENSITIVITY;
+        pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+
+        camera.quaternion.setFromEuler(
+            new THREE.Euler(pitch, yaw, 0, 'YXZ')
+        );
+    });
+
+    document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+    document.addEventListener('keyup',   (e) => { keys[e.code] = false; });
+
+    // ------------------------------------------------------------
+    //  3. HABITACIÓN DE PRUEBA (20 x 10 x 20)
+    // ------------------------------------------------------------
+
+    const ROOM_W = 20;
+    const ROOM_H = 10;
+    const ROOM_D = 20;
+
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 });
+    const wallMat  = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 });
+
+    // Piso
+    const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(ROOM_W, ROOM_D),
+        floorMat
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Techo
+    const ceiling = new THREE.Mesh(
+        new THREE.PlaneGeometry(ROOM_W, ROOM_D),
+        wallMat
+    );
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = ROOM_H;
+    ceiling.receiveShadow = true;
+    scene.add(ceiling);
+
+    // Pared trasera (z negativo)
+    const wallBack = new THREE.Mesh(
+        new THREE.PlaneGeometry(ROOM_W, ROOM_H),
+        wallMat
+    );
+    wallBack.position.set(0, ROOM_H / 2, -ROOM_D / 2);
+    wallBack.receiveShadow = true;
+    scene.add(wallBack);
+
+    // Pared frontal (z positivo)
+    const wallFront = new THREE.Mesh(
+        new THREE.PlaneGeometry(ROOM_W, ROOM_H),
+        wallMat
+    );
+    wallFront.position.set(0, ROOM_H / 2, ROOM_D / 2);
+    wallFront.rotation.y = Math.PI;
+    wallFront.receiveShadow = true;
+    scene.add(wallFront);
+
+    // Pared izquierda (x negativo)
+    const wallLeft = new THREE.Mesh(
+        new THREE.PlaneGeometry(ROOM_D, ROOM_H),
+        wallMat
+    );
+    wallLeft.position.set(-ROOM_W / 2, ROOM_H / 2, 0);
+    wallLeft.rotation.y = Math.PI / 2;
+    wallLeft.receiveShadow = true;
+    scene.add(wallLeft);
+
+    // Pared derecha (x positivo)
+    const wallRight = new THREE.Mesh(
+        new THREE.PlaneGeometry(ROOM_D, ROOM_H),
+        wallMat
+    );
+    wallRight.position.set(ROOM_W / 2, ROOM_H / 2, 0);
+    wallRight.rotation.y = -Math.PI / 2;
+    wallRight.receiveShadow = true;
+    scene.add(wallRight);
+
+    // Colección de paredes para colisiones
+    const walls = [wallBack, wallFront, wallLeft, wallRight];
+
+    // ------------------------------------------------------------
+    //  4. ILUMINACIÓN
+    // ------------------------------------------------------------
+
+    // Luz ambiental
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    // Luz direccional principal con sombras
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5, 8, 3);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
+    dirLight.shadow.camera.near = 0.5;
+    dirLight.shadow.camera.far = 50;
+    dirLight.shadow.camera.left = -15;
+    dirLight.shadow.camera.right = 15;
+    dirLight.shadow.camera.top = 15;
+    dirLight.shadow.camera.bottom = -15;
+    scene.add(dirLight);
+
+    // Point lights para profundidad
+    const pointLight1 = new THREE.PointLight(0xffeedd, 0.3, 20);
+    pointLight1.position.set(-6, 6, -6);
+    scene.add(pointLight1);
+
+    const pointLight2 = new THREE.PointLight(0xddeeff, 0.3, 20);
+    pointLight2.position.set(6, 6, 6);
+    scene.add(pointLight2);
+
+    // ------------------------------------------------------------
+    //  5. COLISIONES BÁSICAS (Raycasting)
+    // ------------------------------------------------------------
+
+    const COLLISION_DISTANCE = 0.5;
+    const raycaster = new THREE.Raycaster();
+    const collisionMeshes = [...walls, floor];
+
+    function canMove(direction) {
+        raycaster.set(camera.position, direction);
+        raycaster.far = COLLISION_DISTANCE;
+        const hits = raycaster.intersectObjects(collisionMeshes);
+        return hits.length === 0;
+    }
+
+    // ------------------------------------------------------------
+    //  6. OBJETOS DE PRUEBA (3 cubos)
+    // ------------------------------------------------------------
+
+    function createCube(size, color, x, y, z) {
+        const mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(size, size, size),
+            new THREE.MeshStandardMaterial({ color, roughness: 0.5 })
+        );
+        mesh.position.set(x, y, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        collisionMeshes.push(mesh);
+        return mesh;
+    }
+
+    const cubeRed   = createCube(1.5, 0xe74c3c, -4, 0.75, -6);
+    const cubeBlue  = createCube(1.0, 0x3498db,  3, 0.50, -3);
+    const cubeGreen = createCube(2.0, 0x2ecc71,  5, 1.00,  7);
+
+    // ------------------------------------------------------------
+    //  7. GAME LOOP
+    // ------------------------------------------------------------
+
+    let prevTime = performance.now();
+
+    function update(dt) {
+        if (!isLocked) return;
+
+        // Vectores de dirección basados en la orientación de la cámara
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward);
+        forward.y = 0;
+        forward.normalize();
+
+        const right = new THREE.Vector3();
+        right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+        const moveDir = new THREE.Vector3();
+
+        if (keys['KeyW'] || keys['ArrowUp'])    moveDir.add(forward);
+        if (keys['KeyS'] || keys['ArrowDown'])   moveDir.sub(forward);
+        if (keys['KeyA'] || keys['ArrowLeft'])   moveDir.sub(right);
+        if (keys['KeyD'] || keys['ArrowRight'])  moveDir.add(right);
+
+        if (moveDir.lengthSq() === 0) return;
+        moveDir.normalize();
+
+        const velocity = moveDir.multiplyScalar(MOVE_SPEED * dt);
+
+        // Comprobar colisión en X
+        const dirX = new THREE.Vector3(Math.sign(velocity.x), 0, 0);
+        if (velocity.x !== 0 && canMove(dirX)) {
+            camera.position.x += velocity.x;
+        }
+
+        // Comprobar colisión en Z
+        const dirZ = new THREE.Vector3(0, 0, Math.sign(velocity.z));
+        if (velocity.z !== 0 && canMove(dirZ)) {
+            camera.position.z += velocity.z;
+        }
+
+        // Mantener altura fija
+        camera.position.y = PLAYER_HEIGHT;
+    }
+
+    function gameLoop() {
+        requestAnimationFrame(gameLoop);
+
+        const now = performance.now();
+        const dt = (now - prevTime) / 1000;
+        prevTime = now;
+
+        update(dt);
+        renderer.render(scene, camera);
+    }
+
+    gameLoop();
+
     </script>
 </body>
 </html>
