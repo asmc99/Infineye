@@ -115,6 +115,7 @@
         1000
     );
     camera.position.set(0, 1.7, 0);
+    scene.add(camera);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -272,10 +273,19 @@
     const collisionMeshes = [...walls, floor];
 
     function canMove(direction) {
-        collisionRaycaster.set(camera.position, direction);
-        collisionRaycaster.far = COLLISION_DISTANCE;
-        const hits = collisionRaycaster.intersectObjects(collisionMeshes);
-        return hits.length === 0;
+        // Lanzar rays desde múltiples alturas para detectar objetos bajos y altos
+        const origins = [
+            new THREE.Vector3(camera.position.x, 0.3, camera.position.z),  // rodillas
+            new THREE.Vector3(camera.position.x, 0.8, camera.position.z),  // cintura
+            new THREE.Vector3(camera.position.x, 1.4, camera.position.z),  // pecho
+        ];
+        for (const origin of origins) {
+            collisionRaycaster.set(origin, direction);
+            collisionRaycaster.far = COLLISION_DISTANCE;
+            const hits = collisionRaycaster.intersectObjects(collisionMeshes);
+            if (hits.length > 0) return false;
+        }
+        return true;
     }
 
     // ------------------------------------------------------------
