@@ -524,18 +524,20 @@
         if (!isLocked || !heldObject) return;
 
         const scrollDelta = -Math.sign(e.deltaY) * 0.3;
-        const newDist = THREE.MathUtils.clamp(
+        holdDistance = THREE.MathUtils.clamp(
             holdDistance + scrollDelta,
             HOLD_DIST_MIN,
             HOLD_DIST_MAX
         );
 
-        holdDistance = newDist;
-
         // Reescalar para mantener el mismo tamaño visual
         const holdScale = visualSize * holdDistance;
         heldObject.scale.set(holdScale, holdScale, holdScale);
-        heldObject.position.z = -holdDistance;
+        heldObject.position.set(0, heldObject.position.y, -holdDistance);
+
+        // Forzar actualización de matrices
+        heldObject.updateMatrix();
+        heldObject.updateMatrixWorld(true);
     });
 
     // --- Actualizar objeto sostenido (bobbing) ---
@@ -547,6 +549,10 @@
         // Bobbing sutil
         const bob = Math.sin(holdTime * BOB_SPEED) * BOB_AMOUNT;
         heldObject.position.set(0, bob, -holdDistance);
+
+        // Forzar actualización de matrices para sincronizar mesh y sombra
+        heldObject.updateMatrix();
+        heldObject.updateMatrixWorld(true);
     }
 
     // --- Input: Click para tomar/soltar ---
