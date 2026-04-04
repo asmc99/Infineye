@@ -530,14 +530,8 @@
             HOLD_DIST_MAX
         );
 
-        // Reescalar para mantener el mismo tamaño visual
-        const holdScale = visualSize * holdDistance;
-        heldObject.scale.set(holdScale, holdScale, holdScale);
-        heldObject.position.set(0, heldObject.position.y, -holdDistance);
-
-        // Forzar actualización de matrices
-        heldObject.updateMatrix();
-        heldObject.updateMatrixWorld(true);
+        // Solo mover, NO reescalar — la perspectiva natural hace
+        // que el objeto se vea más grande/pequeño al acercar/alejar
     });
 
     // --- Actualizar objeto sostenido (bobbing) ---
@@ -549,10 +543,6 @@
         // Bobbing sutil
         const bob = Math.sin(holdTime * BOB_SPEED) * BOB_AMOUNT;
         heldObject.position.set(0, bob, -holdDistance);
-
-        // Forzar actualización de matrices para sincronizar mesh y sombra
-        heldObject.updateMatrix();
-        heldObject.updateMatrixWorld(true);
     }
 
     // --- Input: Click para tomar/soltar ---
