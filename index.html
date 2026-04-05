@@ -151,6 +151,13 @@
         isLocked = document.pointerLockElement === document.body;
         instructions.style.display = isLocked ? 'none' : 'block';
         crosshair.style.display = isLocked ? 'block' : 'none';
+
+        // Iniciar audio en primera interacción
+        if (isLocked && !audioEngine.started) {
+            audioEngine.init();
+            audioEngine.startDrone(1);
+        }
+        if (isLocked) audioEngine._resume();
     });
 
     document.addEventListener('mousemove', (e) => {
@@ -265,7 +272,377 @@
     scene.add(pointLight2);
 
     // ------------------------------------------------------------
-    //  5. COLISIONES BÁSICAS (Raycasting)
+    //  5. AUDIO ENGINE (Web Audio API — Procedural)
+    // ------------------------------------------------------------
+
+    class AudioEngine {
+        constructor() {
+            this.ctx = null;
+            this.master = null;
+            this.started = false;
+            this.reverbBuffer = null;
+            this.droneOsc1 = null;
+            this.droneOsc2 = null;
+            this.droneGain = null;
+            this.droneFilter = null;
+            this.footstepTimer = 0;
+            this.footstepSide = false; // alterna izq/der
+        }
+
+        // --- Inicialización (llamar en primera interacción) ---
+        init() {
+            if (this.started) return;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            this.ctx = new AC();
+            this.master = this.ctx.createGain();
+            this.master.gain.value = 0.8;
+            this.master.connect(this.ctx.destination);
+            this.reverbBuffer = this._createReverbIR(1.5, 0.6);
+            this.started = true;
+        }
+
+        // --- Asegurar contexto activo ---
+        _resume() {
+            if (this.ctx && this.ctx.state === 'suspended') {
+                this.ctx.resume();
+            }
+        }
+
+        // --- Generar Impulse Response para reverb ---
+        _createReverbIR(duration, decay) {
+            const length = this.ctx.sampleRate * duration;
+            const buffer = this.ctx.createBuffer(2, length, this.ctx.sampleRate);
+            for (let ch = 0; ch < 2; ch++) {
+                const data = buffer.getChannelData(ch);
+                for (let i = 0; i < length; i++) {
+                    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay * 3);
+                }
+            }
+            return buffer;
+        }
+
+        // --- Crear nodo de reverb ---
+        _createReverb(dryGain, wetGain) {
+            const dry = this.ctx.createGain();
+            dry.gain.value = dryGain;
+            const wet = this.ctx.createGain();
+            wet.gain.value = wetGain;
+            const conv = this.ctx.createConvolver();
+            conv.buffer = this.reverbBuffer;
+            // Retornar un objeto para conectar
+            return { dry, wet, conv, connect: (dest) => {
+                dry.connect(dest);
+                wet.connect(conv);
+                conv.connect(dest);
+            }};
+        }
+
+        // --- 2. Drone Ambiente ---
+        startDrone(level = 1) {
+            if (!this.started) return;
+            this._resume();
+            const t = this.ctx.currentTime;
+
+            // Limpiar drone previo
+            this.stopDrone();
+
+            this.droneGain = this.ctx.createGain();
+            this.droneGain.gain.setValueAtTime(0, t);
+            this.droneGain.gain.linearRampToValueAtTime(0.08, t + 2);
+
+            this.droneFilter = this.ctx.createBiquadFilter();
+            this.droneFilter.type = 'lowpass';
+            this.droneFilter.frequency.value = 200;
+            this.droneFilter.Q.value = 1;
+
+            // Oscilador 1: base grave
+            const baseFreq = 60 + (level - 1) * 5;
+            this.droneOsc1 = this.ctx.createOscillator();
+            this.droneOsc1.type = 'sine';
+            this.droneOsc1.frequency.value = baseFreq;
+
+            // Oscilador 2: armónico superior
+            this.droneOsc2 = this.ctx.createOscillator();
+            this.droneOsc2.type = 'sine';
+            this.droneOsc2.frequency.value = baseFreq * 1.5;
+            const osc2Gain = this.ctx.createGain();
+            osc2Gain.gain.value = 0.4;
+
+            // Conectar
+            this.droneOsc1.connect(this.droneFilter);
+            this.droneOsc2.connect(osc2Gain);
+            osc2Gain.connect(this.droneFilter);
+            this.droneFilter.connect(this.droneGain);
+            this.droneGain.connect(this.master);
+
+            this.droneOsc1.start(t);
+            this.droneOsc2.start(t);
+        }
+
+        stopDrone() {
+            const t = this.ctx ? this.ctx.currentTime : 0;
+            if (this.droneOsc1) {
+                try { this.droneOsc1.stop(t + 0.1); } catch(e) {}
+                this.droneOsc1 = null;
+            }
+            if (this.droneOsc2) {
+                try { this.droneOsc2.stop(t + 0.1); } catch(e) {}
+                this.droneOsc2 = null;
+            }
+        }
+
+        // --- 3. Pasos ---
+        _playFootstep() {
+            if (!this.started) return;
+            const t = this.ctx.currentTime;
+
+            // Ruido blanco
+            const bufLen = this.ctx.sampleRate * 0.15;
+            const noiseBuf = this.ctx.createBuffer(1, bufLen, this.ctx.sampleRate);
+            const data = noiseBuf.getChannelData(0);
+            for (let i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+
+            const src = this.ctx.createBufferSource();
+            src.buffer = noiseBuf;
+
+            // Bandpass
+            const bp = this.ctx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.frequency.value = this.footstepSide ? 1200 : 900;
+            bp.Q.value = 1.5;
+
+            // Envelope
+            const env = this.ctx.createGain();
+            env.gain.setValueAtTime(0, t);
+            env.gain.linearRampToValueAtTime(0.15, t + 0.01);
+            env.gain.linearRampToValueAtTime(0.08, t + 0.05);
+            env.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+
+            // Reverb
+            const rev = this._createReverb(0.7, 0.3);
+
+            src.connect(bp);
+            bp.connect(env);
+            env.connect(rev.dry);
+            env.connect(rev.wet);
+            rev.connect(this.master);
+
+            src.start(t);
+            src.stop(t + 0.15);
+
+            this.footstepSide = !this.footstepSide;
+        }
+
+        updateFootsteps(isMoving, dt) {
+            if (!this.started) return;
+            if (isMoving) {
+                this.footstepTimer += dt;
+                if (this.footstepTimer >= 0.5) {
+                    this.footstepTimer -= 0.5;
+                    this._playFootstep();
+                }
+            } else {
+                this.footstepTimer = 0.3; // casi listo para sonar al empezar
+            }
+        }
+
+        // --- 4. Pickup ---
+        _playPickup() {
+            if (!this.started) return;
+            this._resume();
+            const t = this.ctx.currentTime;
+
+            // Click con ruido blanco
+            const clickLen = this.ctx.sampleRate * 0.005;
+            const clickBuf = this.ctx.createBuffer(1, clickLen, this.ctx.sampleRate);
+            const cd = clickBuf.getChannelData(0);
+            for (let i = 0; i < clickLen; i++) cd[i] = (Math.random() * 2 - 1) * (1 - i / clickLen);
+            const clickSrc = this.ctx.createBufferSource();
+            clickSrc.buffer = clickBuf;
+            const clickGain = this.ctx.createGain();
+            clickGain.gain.value = 0.1;
+            clickSrc.connect(clickGain);
+            clickGain.connect(this.master);
+            clickSrc.start(t);
+
+            // Sweep tonal ascendente
+            const osc = this.ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(300, t);
+            osc.frequency.exponentialRampToValueAtTime(600, t + 0.15);
+            const env = this.ctx.createGain();
+            env.gain.setValueAtTime(0, t);
+            env.gain.linearRampToValueAtTime(0.12, t + 0.01);
+            env.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+            osc.connect(env);
+            env.connect(this.master);
+            osc.start(t);
+            osc.stop(t + 0.25);
+        }
+
+        // --- 5. Drop ---
+        _playDrop(objectScale) {
+            if (!this.started) return;
+            this._resume();
+            const t = this.ctx.currentTime;
+
+            // Mapear escala a pitch y volumen
+            const s = Math.max(0.1, Math.min(objectScale, 20));
+            const pitch = THREE.MathUtils.lerp(150, 40, Math.min(s / 5, 1));
+            const vol = THREE.MathUtils.lerp(0.08, 0.25, Math.min(s / 5, 1));
+            const reverbWet = THREE.MathUtils.lerp(0.1, 0.5, Math.min(s / 5, 1));
+
+            // Thud grave
+            const osc = this.ctx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(pitch, t);
+            osc.frequency.exponentialRampToValueAtTime(pitch * 0.5, t + 0.2);
+            const env = this.ctx.createGain();
+            env.gain.setValueAtTime(vol, t);
+            env.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+
+            // Componente de ruido para impacto
+            const noiseLen = this.ctx.sampleRate * 0.08;
+            const noiseBuf = this.ctx.createBuffer(1, noiseLen, this.ctx.sampleRate);
+            const nd = noiseBuf.getChannelData(0);
+            for (let i = 0; i < noiseLen; i++) nd[i] = (Math.random() * 2 - 1) * (1 - i / noiseLen);
+            const noiseSrc = this.ctx.createBufferSource();
+            noiseSrc.buffer = noiseBuf;
+            const noiseGain = this.ctx.createGain();
+            noiseGain.gain.value = vol * 0.5;
+            const noiseLp = this.ctx.createBiquadFilter();
+            noiseLp.type = 'lowpass';
+            noiseLp.frequency.value = pitch * 3;
+
+            // Reverb
+            const rev = this._createReverb(1 - reverbWet, reverbWet);
+
+            osc.connect(env);
+            env.connect(rev.dry);
+            env.connect(rev.wet);
+            rev.connect(this.master);
+            osc.start(t);
+            osc.stop(t + 0.35);
+
+            noiseSrc.connect(noiseLp);
+            noiseLp.connect(noiseGain);
+            noiseGain.connect(this.master);
+            noiseSrc.start(t);
+        }
+
+        // --- 6. Puzzle resuelto ---
+        _playPuzzleSolved() {
+            if (!this.started) return;
+            this._resume();
+            const t = this.ctx.currentTime;
+            const notes = [261.63, 329.63, 392.00]; // C4, E4, G4
+            const delays = [0, 0.1, 0.2];
+
+            notes.forEach((freq, i) => {
+                const osc = this.ctx.createOscillator();
+                osc.type = 'triangle';
+                osc.frequency.value = freq;
+                const env = this.ctx.createGain();
+                const start = t + delays[i];
+                env.gain.setValueAtTime(0, start);
+                env.gain.linearRampToValueAtTime(0.12, start + 0.1);
+                env.gain.setValueAtTime(0.12, start + 0.6);
+                env.gain.exponentialRampToValueAtTime(0.001, start + 1.6);
+
+                const rev = this._createReverb(0.5, 0.5);
+                osc.connect(env);
+                env.connect(rev.dry);
+                env.connect(rev.wet);
+                rev.connect(this.master);
+                osc.start(start);
+                osc.stop(start + 1.7);
+            });
+
+            // Barrido ascendente sutil
+            const sweep = this.ctx.createOscillator();
+            sweep.type = 'sine';
+            sweep.frequency.setValueAtTime(200, t);
+            sweep.frequency.exponentialRampToValueAtTime(800, t + 1.5);
+            const sweepEnv = this.ctx.createGain();
+            sweepEnv.gain.setValueAtTime(0, t);
+            sweepEnv.gain.linearRampToValueAtTime(0.03, t + 0.3);
+            sweepEnv.gain.exponentialRampToValueAtTime(0.001, t + 1.8);
+            sweep.connect(sweepEnv);
+            sweepEnv.connect(this.master);
+            sweep.start(t);
+            sweep.stop(t + 2);
+        }
+
+        // --- 7. Transición de nivel ---
+        _playLevelTransition(nextLevel) {
+            if (!this.started) return;
+            this._resume();
+            const t = this.ctx.currentTime;
+
+            // Subir drone
+            if (this.droneGain) {
+                this.droneGain.gain.linearRampToValueAtTime(0.3, t + 1);
+            }
+            if (this.droneOsc1) {
+                this.droneOsc1.frequency.linearRampToValueAtTime(120, t + 1);
+            }
+
+            // Distorsión creciente
+            const shaper = this.ctx.createWaveShaper();
+            const curve = new Float32Array(256);
+            for (let i = 0; i < 256; i++) {
+                const x = (i / 128) - 1;
+                curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x));
+            }
+            shaper.curve = curve;
+
+            // Ruido de transición con reverb larga
+            const transLen = this.ctx.sampleRate * 1.5;
+            const transBuf = this.ctx.createBuffer(1, transLen, this.ctx.sampleRate);
+            const td = transBuf.getChannelData(0);
+            for (let i = 0; i < transLen; i++) {
+                td[i] = (Math.random() * 2 - 1) * Math.pow(i / transLen, 2) *
+                         Math.pow(1 - i / transLen, 0.5);
+            }
+            const transSrc = this.ctx.createBufferSource();
+            transSrc.buffer = transBuf;
+            const transGain = this.ctx.createGain();
+            transGain.gain.value = 0.15;
+
+            // Reverb larga
+            const longIR = this._createReverbIR(4, 0.3);
+            const longConv = this.ctx.createConvolver();
+            longConv.buffer = longIR;
+
+            transSrc.connect(shaper);
+            shaper.connect(transGain);
+            transGain.connect(longConv);
+            longConv.connect(this.master);
+            transSrc.start(t);
+
+            // Silencio abrupto después de 1.5s, nuevo drone a los 2s
+            setTimeout(() => { this.stopDrone(); }, 1500);
+            setTimeout(() => { this.startDrone(nextLevel); }, 2000);
+        }
+
+        // --- 8. Interfaz play() ---
+        play(soundName, options = {}) {
+            if (!this.started) return;
+            this._resume();
+            switch (soundName) {
+                case 'footstep':    this._playFootstep(); break;
+                case 'pickup':      this._playPickup(); break;
+                case 'drop':        this._playDrop(options.scale || 1); break;
+                case 'puzzle':      this._playPuzzleSolved(); break;
+                case 'transition':  this._playLevelTransition(options.level || 2); break;
+            }
+        }
+    }
+
+    const audioEngine = new AudioEngine();
+
+    // ------------------------------------------------------------
+    //  6. COLISIONES BÁSICAS (Raycasting)
     // ------------------------------------------------------------
 
     const COLLISION_DISTANCE = 0.5;
@@ -421,6 +798,9 @@
         heldObject = obj;
         holdTime = 0;
 
+        // Sonido pickup
+        audioEngine.play('pickup');
+
         // Limpiar hover
         clearHover();
         hoveredObject = null;
@@ -512,6 +892,9 @@
 
         // Devolver al array de colisión
         collisionMeshes.push(obj);
+
+        // Sonido drop proporcional al tamaño
+        audioEngine.play('drop', { scale: newScale });
 
         // Crosshair modo normal
         crosshair.classList.remove('holding');
@@ -609,6 +992,10 @@
         }
 
         camera.position.y = PLAYER_HEIGHT;
+
+        // --- Audio: pasos ---
+        const isMoving = moveDir.lengthSq() > 0;
+        audioEngine.updateFootsteps(isMoving, dt);
 
         // --- Sistemas de interacción ---
         updateInteractionRaycast();
